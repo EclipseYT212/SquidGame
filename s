@@ -560,77 +560,88 @@ I'm also actively improving this script and have started my first new project: a
     closeBtn.MouseButton1Click:Connect(function()
         frame.Visible = false
     end)
--- === MOBILE FIT & DRAG FOR CHANGELOG (self-contained) ===
+-- === MOBILE FIT & DRAG FOR CHANGELOG (self-contained, nil-safe) ===
 do
     local UIS = game:GetService("UserInputService")
     local GS  = game:GetService("GuiService")
 
-    -- Provide UIUtil if missing (one-time)
-    _G.UIUtil = _G.UIUtil or {}
+    -- resolve changelog widgets even if we're in a new scope:
+    local frame = (rawget(_G, "UI") and _G.UI.ChangelogFrame) or _G.ChangelogFrame or frame
+    if not frame then
+        -- try to find by name if saved globally not available
+        local pg = game.Players.LocalPlayer:FindFirstChild("PlayerGui")
+        if pg then frame = pg:FindFirstChild("ChangelogFrame", true) end
+    end
+    if not frame then return end  -- nothing to tweak
 
-    _G.UIUtil.makeDraggable = _G.UIUtil.makeDraggable or function(win, handle)
+    local scroll = frame:FindFirstChild("ChangelogScroll")
+    local text   = (scroll and scroll:FindFirstChildOfClass("TextLabel")) or frame:FindFirstChildOfClass("TextLabel")
+
+    -- local helpers (no _G.UIUtil required)
+    local function makeDraggable(win, handle)
         if not (win and handle) then return end
-        local drag, startInput, startPos, cur
+        local dragging, startPos, startInput, currentInput
         handle.Active = true
         handle.InputBegan:Connect(function(i)
             local t = i.UserInputType
             if t == Enum.UserInputType.MouseButton1 or t == Enum.UserInputType.Touch then
-                drag, startInput, startPos, cur = true, i.Position, win.Position, i
+                dragging, startInput, startPos, currentInput = true, i.Position, win.Position, i
                 i.Changed:Connect(function()
-                    if i.UserInputState == Enum.UserInputState.End then drag = false end
+                    if i.UserInputState == Enum.UserInputState.End then dragging = false end
                 end)
             end
         end)
         handle.InputChanged:Connect(function(i)
             local t = i.UserInputType
             if t == Enum.UserInputType.MouseMovement or t == Enum.UserInputType.Touch then
-                cur = i
+                currentInput = i
             end
         end)
         game:GetService("UserInputService").InputChanged:Connect(function(i)
-            if drag and i == cur then
+            if dragging and i == currentInput then
                 local d = i.Position - startInput
                 win.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
             end
         end)
     end
 
-    _G.UIUtil.safeCenter = _G.UIUtil.safeCenter or function(win)
+    local function safeCenter(win)
         if not win then return end
-        local cam = workspace.CurrentCamera
-        if not cam then return end
-        local inset = GS:GetSafeAreaInsets()
-        local vp = cam.ViewportSize
-        local x = (vp.X - win.AbsoluteSize.X) * 0.5 + (inset and inset.X or 0)
-        local y = (vp.Y - win.AbsoluteSize.Y) * 0.5 + (inset and inset.Y or 0)
-        win.Position = UDim2.fromOffset(math.floor(x), math.floor(y))
-        win.AnchorPoint = Vector2.new(0,0) -- position already accounts for centering offset
-    end
-
-    _G.UIUtil.mobileScale = _G.UIUtil.mobileScale or function(win, minS, maxS)
-        if not win then return end
+        local inset = Vector2.new(0,0)
+        pcall(function()
+            local v = GS:GetSafeAreaInsets()
+            if typeof(v) == "Vector2" then inset = v end
+        end)
         local cam = workspace.CurrentCamera
         if not cam then return end
         local vp = cam.ViewportSize
-        local baseW = 400 -- baseline width to scale from
-        local scale = vp.X / baseW
-        scale = math.clamp(scale, minS or 0.6, maxS or 0.9)
-        win.Size = UDim2.new(0, math.floor(win.Size.X.Offset * scale), 0, math.floor(win.Size.Y.Offset * scale))
+        local x = math.floor((vp.X - win.AbsoluteSize.X) * 0.5 + inset.X)
+        local y = math.floor((vp.Y - win.AbsoluteSize.Y) * 0.5 + inset.Y)
+        win.AnchorPoint = Vector2.new(0,0) -- using absolute offsets
+        win.Position = UDim2.fromOffset(x, y)
     end
 
-    -- Assume 'frame', 'scroll', 'text' are the changelog instances created just above
+    local function mobileScale(win, minS, maxS)
+        if not win then return end
+        local cam = workspace.CurrentCamera
+        if not cam then return end
+        local vpX = cam.ViewportSize.X
+        local baseW = 400
+        local s = math.clamp(vpX / baseW, minS or 0.6, maxS or 0.9)
+        win.Size = UDim2.new(0, math.max(180, math.floor(win.Size.X.Offset * s)), 0, math.max(120, math.floor(win.Size.Y.Offset * s)))
+    end
+
+    -- Apply tweaks
     if UIS.TouchEnabled and not UIS.KeyboardEnabled then
-        if frame then
-            frame.Size = UDim2.new(0, 360, 0, 240) -- compact for phones
-            _G.UIUtil.mobileScale(frame, 0.6, 0.9)
-            _G.UIUtil.safeCenter(frame)
-            _G.UIUtil.makeDraggable(frame, frame)
-        end
+        frame.Size = UDim2.new(0, 360, 0, 240) -- compact base for phones
+        mobileScale(frame, 0.6, 0.9)
+        safeCenter(frame)
         if scroll then scroll.ScrollBarThickness = 3 end
         if text then text.TextSize = 13 end
-    else
-        if frame then _G.UIUtil.makeDraggable(frame, frame) end
     end
+
+    -- drag anywhere (works on PC + Mobile)
+    makeDraggable(frame, frame)
 end
 
 
@@ -8000,4 +8011,4 @@ function _G.UIUtil.fitLabelToBar(labelObj, maxSize, minSize, padX)
     fit()
     labelObj:GetPropertyChangedSignal("AbsoluteSize"):Connect(fit)
 end
-warn(edited version loaded)
+warn("Loaded")
