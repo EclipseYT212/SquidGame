@@ -560,24 +560,79 @@ I'm also actively improving this script and have started my first new project: a
     closeBtn.MouseButton1Click:Connect(function()
         frame.Visible = false
     end)
-    -- === MOBILE FIT & DRAG FOR CHANGELOG ===
+-- === MOBILE FIT & DRAG FOR CHANGELOG (self-contained) ===
 do
     local UIS = game:GetService("UserInputService")
-if UIS.TouchEnabled and not UIS.KeyboardEnabled then
+    local GS  = game:GetService("GuiService")
 
-        -- shrink & center (safe area aware)
-        frame.Size = UDim2.new(0, 360, 0, 240) -- compact base for phones
-        _G.UIUtil.mobileScale(frame, 0.6, 0.9)
-        _G.UIUtil.safeCenter(frame)
+    -- Provide UIUtil if missing (one-time)
+    _G.UIUtil = _G.UIUtil or {}
 
-        -- friendlier scrolling on phones
-        scroll.ScrollBarThickness = 3
-        text.TextSize = 13  -- readable on small screens
+    _G.UIUtil.makeDraggable = _G.UIUtil.makeDraggable or function(win, handle)
+        if not (win and handle) then return end
+        local drag, startInput, startPos, cur
+        handle.Active = true
+        handle.InputBegan:Connect(function(i)
+            local t = i.UserInputType
+            if t == Enum.UserInputType.MouseButton1 or t == Enum.UserInputType.Touch then
+                drag, startInput, startPos, cur = true, i.Position, win.Position, i
+                i.Changed:Connect(function()
+                    if i.UserInputState == Enum.UserInputState.End then drag = false end
+                end)
+            end
+        end)
+        handle.InputChanged:Connect(function(i)
+            local t = i.UserInputType
+            if t == Enum.UserInputType.MouseMovement or t == Enum.UserInputType.Touch then
+                cur = i
+            end
+        end)
+        game:GetService("UserInputService").InputChanged:Connect(function(i)
+            if drag and i == cur then
+                local d = i.Position - startInput
+                win.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+            end
+        end)
     end
-    -- draggable (titleless window -> drag anywhere)
-    _G.UIUtil.makeDraggable(frame, frame)
+
+    _G.UIUtil.safeCenter = _G.UIUtil.safeCenter or function(win)
+        if not win then return end
+        local cam = workspace.CurrentCamera
+        if not cam then return end
+        local inset = GS:GetSafeAreaInsets()
+        local vp = cam.ViewportSize
+        local x = (vp.X - win.AbsoluteSize.X) * 0.5 + (inset and inset.X or 0)
+        local y = (vp.Y - win.AbsoluteSize.Y) * 0.5 + (inset and inset.Y or 0)
+        win.Position = UDim2.fromOffset(math.floor(x), math.floor(y))
+        win.AnchorPoint = Vector2.new(0,0) -- position already accounts for centering offset
+    end
+
+    _G.UIUtil.mobileScale = _G.UIUtil.mobileScale or function(win, minS, maxS)
+        if not win then return end
+        local cam = workspace.CurrentCamera
+        if not cam then return end
+        local vp = cam.ViewportSize
+        local baseW = 400 -- baseline width to scale from
+        local scale = vp.X / baseW
+        scale = math.clamp(scale, minS or 0.6, maxS or 0.9)
+        win.Size = UDim2.new(0, math.floor(win.Size.X.Offset * scale), 0, math.floor(win.Size.Y.Offset * scale))
+    end
+
+    -- Assume 'frame', 'scroll', 'text' are the changelog instances created just above
+    if UIS.TouchEnabled and not UIS.KeyboardEnabled then
+        if frame then
+            frame.Size = UDim2.new(0, 360, 0, 240) -- compact for phones
+            _G.UIUtil.mobileScale(frame, 0.6, 0.9)
+            _G.UIUtil.safeCenter(frame)
+            _G.UIUtil.makeDraggable(frame, frame)
+        end
+        if scroll then scroll.ScrollBarThickness = 3 end
+        if text then text.TextSize = 13 end
+    else
+        if frame then _G.UIUtil.makeDraggable(frame, frame) end
+    end
 end
-end
+
 
 -- Add this with your other UI buttons:
 local liteModeToggle = Instance.new("TextButton", frame)
@@ -7945,3 +8000,4 @@ function _G.UIUtil.fitLabelToBar(labelObj, maxSize, minSize, padX)
     fit()
     labelObj:GetPropertyChangedSignal("AbsoluteSize"):Connect(fit)
 end
+warn(edited version loaded)
