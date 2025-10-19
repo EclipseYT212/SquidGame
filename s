@@ -4,7 +4,6 @@ local function getSafeRandomSpeed()
 	return math.random(21,28)
 end
 
-
 -- AutoFarm v5.4 (Optimized for MM2 & Error Handling): Collect Coins Across All Maps (GTA 6 Style UI)
 -- Improvements: GTA 6 themed UI, dynamic coin detection, optional speed boost, anti-AFK, draggable UI.
 -- Group Collection Logic: Now prioritizes the absolute closest uncollected coin to current position,
@@ -560,7 +559,137 @@ I'm also actively improving this script and have started my first new project: a
     closeBtn.MouseButton1Click:Connect(function()
         frame.Visible = false
     end)
+    -- ====== Draggable helper bootstrap (PC + Mobile robust) ======
+_G.UIUtil = _G.UIUtil or {}
 
+if type(_G.UIUtil.makeDraggable) ~= "function" then
+    function _G.UIUtil.makeDraggable(handle: GuiObject, target: GuiObject)
+        local UIS = game:GetService("UserInputService")
+
+        if not (handle and target) then return end
+        handle.Active = true
+        target.Active = true
+
+        local dragging = false
+        local startPos: UDim2? = nil
+        local startInputPos: Vector2? = nil
+
+        -- mouse tracking
+        local function mouseUpdate(input: InputObject)
+            if not dragging or input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+            local delta = input.Position - startInputPos
+            target.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + delta.X,
+                startPos.Y.Scale, startPos.Y.Offset + delta.Y
+            )
+        end
+
+        -- === Touch tracking (explicit) ===
+        local activeTouch: InputObject? = nil
+
+        local function hitTest(gui: GuiObject, pos: Vector2)
+            local ap = gui.AbsolutePosition
+            local as = gui.AbsoluteSize
+            return pos.X >= ap.X and pos.X <= ap.X + as.X and pos.Y >= ap.Y and pos.Y <= ap.Y + as.Y
+        end
+
+        local function beginDrag(pos: Vector2, touchObj: InputObject?)
+            dragging = true
+            startPos = target.Position
+            startInputPos = pos
+            activeTouch = touchObj
+        end
+
+        local function endDrag()
+            dragging = false
+            activeTouch = nil
+            startPos = nil
+            startInputPos = nil
+        end
+
+        -- Mouse path (PC)
+        handle.InputBegan:Connect(function(input: InputObject)
+            local t = input.UserInputType
+            if t == Enum.UserInputType.MouseButton1 then
+                beginDrag(input.Position, nil)
+                input.Changed:Connect(function()
+                    if input.UserInputState == Enum.UserInputState.End then
+                        endDrag()
+                    end
+                end)
+            end
+        end)
+
+        UIS.InputChanged:Connect(function(input: InputObject)
+            if input.UserInputType == Enum.UserInputType.MouseMovement then
+                mouseUpdate(input)
+            end
+        end)
+
+        -- Touch path (Mobile) — use global touch events + hit test on handle
+        UIS.TouchStarted:Connect(function(touch: InputObject, gp: boolean)
+            if dragging or gp then return end
+            local pos = touch.Position
+            if hitTest(handle, pos) then
+                beginDrag(pos, touch)
+            end
+        end)
+
+        UIS.TouchMoved:Connect(function(touch: InputObject, gp: boolean)
+            if not dragging or gp then return end
+            -- Only move if it's the same touch that began the drag
+            if activeTouch and touch.TouchId ~= activeTouch.TouchId then return end
+            local delta = touch.Position - startInputPos
+            target.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + delta.X,
+                startPos.Y.Scale, startPos.Y.Offset + delta.Y
+            )
+        end)
+
+        UIS.TouchEnded:Connect(function(touch: InputObject, gp: boolean)
+            if not dragging then return end
+            if not activeTouch or touch.TouchId == activeTouch.TouchId then
+                endDrag()
+            end
+        end)
+
+        -- Also allow starting drag from the handle via InputBegan for touch (some UIs still send it)
+        handle.InputBegan:Connect(function(input: InputObject)
+            if input.UserInputType == Enum.UserInputType.Touch and not dragging then
+                beginDrag(input.Position, input)
+                input.Changed:Connect(function()
+                    if input.UserInputState == Enum.UserInputState.End then
+                        endDrag()
+                    end
+                end)
+            end
+        end)
+
+        -- Optional: prevent Scrollings/Buttons from swallowing touches during drag
+        -- (uncomment if needed)
+        -- handle.Selectable = true
+        -- target.Selectable = true
+    end
+end
+
+    -- === MOBILE FIT & DRAG FOR CHANGELOG ===
+
+do
+  local UIS = game:GetService("UserInputService")
+if UIS.TouchEnabled and not UIS.KeyboardEnabled then
+        -- shrink & center (safe area aware)
+        frame.Size = UDim2.new(0, 360, 0, 240) -- compact base for phones
+        _G.UIUtil.mobileScale(frame, 0.6, 0.9)
+        _G.UIUtil.safeCenter(frame)
+
+        -- friendlier scrolling on phones
+        scroll.ScrollBarThickness = 3
+        text.TextSize = 13  -- readable on small screens
+    end
+    -- draggable (titleless window -> drag anywhere)
+    _G.UIUtil.makeDraggable(frame, frame)
+end
+end
 
 -- Add this with your other UI buttons:
 local liteModeToggle = Instance.new("TextButton", frame)
@@ -2325,349 +2454,296 @@ function Autofarm:_StealthFastMove(hrp, targetPos)
 	hrp.CFrame = CFrame.new(targetPos)
 	return true
 end
-
 -- === PathfindV2Move with safe coin validation & auto retarget ===
 function Autofarm:_PathfindV2Move(hrp, target)
-    local TweenService = game:GetService("TweenService")
-    local RunService = game:GetService("RunService")
-    local PathfindingService = game:GetService("PathfindingService")
-    local Players = game:GetService("Players")
-    local player = Players.LocalPlayer
+	local TweenService = game:GetService("TweenService")
+	local RunService = game:GetService("RunService")
+	local PathfindingService = game:GetService("PathfindingService")
 
-    -- If we're paused, do nothing except keep countdown text updated
-    if self:IsPaused() then
-        if self._pausedUntil and self.StatusLabel then
-            local remain = math.max(0, math.ceil(self._pausedUntil - tick()))
-            self.StatusLabel.Text = (remain > 0)
-                and ("Status: Farmer Restarted (%ds)"):format(remain)
-                or "Status: Farmer Restarted"
-        end
-        return false, "paused"
-    end
+	-- Configuration with better defaults
+	local config = {
+		baseSpeed = self.Settings.BaseSpeed or 32,
+		floatHeight = self.Settings.FloatHeight or 2.7,
+		hoverHeight = self.Settings.HoverHeight or 3,
+		maxDistance = self.Settings.MaxDistance or 2000,
+		timeout = self.Settings.Timeout or 8,
+		maxRetries = self.Settings.MaxRetries or 5,
+		targetTime = self.Settings.TargetTime,
+		usePathfinding = self.Settings.UsePathfinding or false,
+		optimizeFloat = self.Settings.OptimizeFloat or true,
+		minTweenDuration = self.Settings.MinTweenDuration or 0.1,
+		maxTweenDuration = self.Settings.MaxTweenDuration or 10
+	}
 
-    -- ========== Candy GUI helpers ==========
-    self._candyState = self._candyState or { last = 0 }
+	-- Enhanced position resolver with validation
+	local function safeGetPosition(obj)
+		if not obj then return nil end
+		
+		local success, result = pcall(function()
+			if typeof(obj) == "Vector3" then
+				return obj
+			elseif typeof(obj) == "Instance" then
+				if obj:IsA("BasePart") and obj:IsDescendantOf(workspace) and obj.Parent then
+					return obj.Position
+				elseif obj:IsA("Model") and obj.PrimaryPart and obj:IsDescendantOf(workspace) then
+					return obj.PrimaryPart.Position
+				end
+			end
+			return nil
+		end)
+		
+		return success and result or nil
+	end
 
-    local function getCandyProgress(plr)
-        local gui = plr:FindFirstChild("PlayerGui");            if not gui then return 0, 40, false end
-        local mainGui = gui:FindFirstChild("MainGUI");           if not mainGui then return 0, 40, false end
-        local gameGui = mainGui:FindFirstChild("Game");          if not gameGui then return 0, 40, false end
-        local coinBags = gameGui:FindFirstChild("CoinBags");     if not coinBags then return 0, 40, false end
-        local container = coinBags:FindFirstChild("Container");  if not container then return 0, 40, false end
-        local candy = container:FindFirstChild("Candy");         if not candy then return 0, 40, false end
+	-- Optimized floating system with better physics
+	local float = hrp:FindFirstChild("FloatVelocity")
+	if not float then
+		float = Instance.new("BodyVelocity")
+		float.MaxForce = Vector3.new(0, math.huge, 0)
+		float.Name = "FloatVelocity"
+		float.Parent = hrp
+	end
+	float.Velocity = Vector3.zero
 
-        local cur, max
-        for _,d in ipairs(candy:GetDescendants()) do
-            if d:IsA("TextLabel") or d:IsA("TextButton") then
-                local a,b = tostring(d.Text or ""):match("(%d+)%s*/%s*(%d+)")
-                if a and b then cur, max = tonumber(a), tonumber(b); break end
-            end
-        end
-        max = tonumber(max) or 40
-        cur = tonumber(cur) or 0
-        if cur > max then cur = max end
+	local lastFloatUpdate = 0
+	local function updateFloat()
+		local now = tick()
+		-- Optimize: only update float every 0.1 seconds if enabled
+		if config.optimizeFloat and (now - lastFloatUpdate) < 0.1 then
+			return
+		end
+		lastFloatUpdate = now
 
-        local fullIcon = candy:FindFirstChild("FullBagIcon")
-        local isFull = (fullIcon and fullIcon.Visible == true) or (cur >= max)
-        return cur, max, isFull
-    end
+		local currentY = hrp.Position.Y
+		local targetY = currentY + config.floatHeight
+		local deltaY = targetY - currentY
+		
+		-- Smoother floating with damping
+		local velocity = math.clamp(deltaY * 3, -30, 30)
+		float.Velocity = Vector3.new(0, velocity, 0)
+	end
 
-    local function hitExactly10(plr)
-        local cur, max, isFull = getCandyProgress(plr)
-        local last = self._candyState.last or 0
-        local fired = (cur == 10 and last ~= 10) or (last < 10 and cur > 10)
-        self._candyState.last = cur
-        return fired, cur, max, isFull
-    end
+	-- Enhanced speed calculation with smoother scaling
+	local function calculateSpeed(distance)
+		local speed = config.baseSpeed
+		
+		-- Adaptive speed based on remaining time
+		if config.targetTime and self.RoundStartTime then
+			local elapsed = tick() - self.RoundStartTime
+			local remaining = config.targetTime - elapsed
+			
+			if remaining > 0 and remaining < 20 then
+				-- Smoother boost curve
+				local urgency = math.max(0, (20 - remaining) / 20)
+				local boostFactor = 1 + (urgency * urgency * 2) -- Quadratic scaling
+				speed = config.baseSpeed * math.min(boostFactor, 4)
+			end
+		end
+		
+		-- Distance-based speed adjustment
+		if distance < 10 then
+			speed = speed * 0.7 -- Slow down for precision near target
+		elseif distance > 100 then
+			speed = speed * 1.3 -- Speed up for long distances
+		end
+		
+		return speed
+	end
 
-    -- ========== Your original config / move logic ==========
-    local config = {
-        baseSpeed = self.Settings.BaseSpeed or 28,
-        floatHeight = self.Settings.FloatHeight or -5,
-        hoverHeight = self.Settings.HoverHeight or -5,
-        maxDistance = self.Settings.MaxDistance or 2000,
-        timeout = self.Settings.Timeout or 8,
-        maxRetries = self.Settings.MaxRetries or 5,
-        targetTime = self.Settings.TargetTime,
-        usePathfinding = self.Settings.UsePathfinding or false,
-        optimizeFloat = self.Settings.OptimizeFloat or true,
-        minTweenDuration = self.Settings.MinTweenDuration or 0.1,
-        maxTweenDuration = self.Settings.MaxTweenDuration or 10
-    }
+	-- Simple pathfinding with waypoints
+	local function getPathWaypoints(startPos, endPos)
+		if not config.usePathfinding then
+			return {endPos}
+		end
+		
+		local success, result = pcall(function()
+			local path = PathfindingService:CreatePath({
+				AgentRadius = 3,
+				AgentHeight = 6,
+				AgentCanJump = true,
+				WaypointSpacing = 8
+			})
+			
+			path:ComputeAsync(startPos, endPos)
+			
+			if path.Status == Enum.PathStatus.Success then
+				local waypoints = path:GetWaypoints()
+				local positions = {}
+				for i = 2, #waypoints do -- Skip first waypoint (current position)
+					table.insert(positions, waypoints[i].Position + Vector3.new(0, config.hoverHeight, 0))
+				end
+				return #positions > 0 and positions or {endPos}
+			end
+			
+			return {endPos} -- Fallback to direct path
+		end)
+		
+		return success and result or {endPos}
+	end
 
-    local function safeGetPosition(obj)
-        if not obj then return nil end
-        local ok, result = pcall(function()
-            if typeof(obj) == "Vector3" then
-                return obj
-            elseif typeof(obj) == "Instance" then
-                if obj:IsA("BasePart") and obj:IsDescendantOf(workspace) and obj.Parent then
-                    return obj.Position
-                elseif obj:IsA("Model") and obj.PrimaryPart and obj:IsDescendantOf(workspace) then
-                    return obj.PrimaryPart.Position
-                end
-            end
-            return nil
-        end)
-        return ok and result or nil
-    end
+	-- Enhanced tweening with waypoint support
+	local function tweenToTarget(targetPos, targetInstance)
+		local startPos = hrp.Position
+		local waypoints = getPathWaypoints(startPos, targetPos)
+		
+		for i, waypointPos in ipairs(waypoints) do
+			local currentPos = hrp.Position
+			local distance = (currentPos - waypointPos).Magnitude
+			
+			-- Skip waypoints that are too close
+			if distance < 2 then
+				continue
+			end
+			
+			-- Validate target still exists for final waypoint
+			if i == #waypoints and not safeGetPosition(targetInstance) then
+				return "retry"
+			end
+			
+			local speed = calculateSpeed(distance)
+			local duration = math.clamp(distance / speed, config.minTweenDuration, config.maxTweenDuration)
+			
+			-- Create tween with better easing
+			local tweenInfo = TweenInfo.new(
+				duration,
+				distance < 10 and Enum.EasingStyle.Quad or Enum.EasingStyle.Linear,
+				Enum.EasingDirection.Out
+			)
+			
+			local tween = TweenService:Create(hrp, tweenInfo, {
+				CFrame = CFrame.new(waypointPos)
+			})
+			
+			tween:Play()
+			
+			-- Enhanced monitoring during tween
+			local startTime = tick()
+			local lastDistanceCheck = 0
+			local stuckCounter = 0
+			
+			while tween.PlaybackState == Enum.PlaybackState.Playing do
+				local now = tick()
+				
+				-- Timeout check
+				if now - startTime > config.timeout then
+					tween:Cancel()
+					return "timeout"
+				end
+				
+				-- Target validation (less frequent for performance)
+				if now - lastDistanceCheck > 0.5 then
+					if i == #waypoints and not safeGetPosition(targetInstance) then
+						tween:Cancel()
+						return "retry"
+					end
+					
+					-- Stuck detection
+					local currentDistance = (hrp.Position - waypointPos).Magnitude
+					if currentDistance > distance * 0.9 then
+						stuckCounter = stuckCounter + 1
+						if stuckCounter > 3 then
+							tween:Cancel()
+							return "stuck"
+						end
+					else
+						stuckCounter = 0
+					end
+					
+					lastDistanceCheck = now
+				end
+				
+				RunService.Heartbeat:Wait()
+			end
+			
+			-- Check if we reached the waypoint
+			local finalDistance = (hrp.Position - waypointPos).Magnitude
+			if finalDistance > 5 then
+				return "incomplete"
+			end
+		end
+		
+		return "success"
+	end
 
-    -- Float (your style)
-    local float = hrp:FindFirstChild("FloatVelocity")
-    if not float then
-        float = Instance.new("BodyVelocity")
-        float.MaxForce = Vector3.new(0, math.huge, 0)
-        float.Name = "FloatVelocity"
-        float.Parent = hrp
-    end
-    float.Velocity = Vector3.zero
+	-- Main execution with enhanced error handling
+	local floatConnection = RunService.Heartbeat:Connect(updateFloat)
+	local attempts = 0
+	local success = false
+	local lastError = nil
 
-    local lastFloatUpdate = 0
-    local function updateFloat()
-        local now = tick()
-        if config.optimizeFloat and (now - lastFloatUpdate) < 0.1 then return end
-        lastFloatUpdate = now
-        local currentY = hrp.Position.Y
-        local targetY = currentY + config.floatHeight
-        local deltaY = targetY - currentY
-        local velocity = math.clamp(deltaY * 3, -30, 30)
-        float.Velocity = Vector3.new(0, velocity, 0)
-    end
+	while not success and attempts < config.maxRetries do
+		attempts = attempts + 1
+		
+		-- Update status
+		if self.StatusLabel then
+			self.StatusLabel.Text = string.format("🔄 Moving... (Attempt %d/%d)", attempts, config.maxRetries)
+		end
+		
+		local targetPos = safeGetPosition(target)
+		if not targetPos then
+			-- Try to get a new target
+			target = self:GetClosestCoin() and self:GetClosestCoin() or nil
+			if not target then
+				lastError = "No valid targets found"
+				break
+			end
+			continue
+		end
+		
+		-- Distance validation
+		local distance = (hrp.Position - targetPos).Magnitude
+		if distance > config.maxDistance then
+			lastError = "Target too far away"
+			target = self:GetClosestCoin() and self:GetClosestCoin() or nil
+			if not target then break end
+			continue
+		end
+		
+		-- Execute movement
+		local finalTargetPos = targetPos + Vector3.new(0, config.hoverHeight, 0)
+		local result = tweenToTarget(finalTargetPos, target)
+		
+		if result == "success" then
+			success = true
+			if self.StatusLabel then
+				self.StatusLabel.Text = "✅ Target reached!"
+			end
+		elseif result == "retry" or result == "timeout" or result == "stuck" then
+			lastError = result
+			-- Get new target for retry
+			target = self:GetClosestCoin() and self:GetClosestCoin() or nil
+			if not target then
+				lastError = "No more targets available"
+				break
+			end
+		end
+		
+		-- Brief pause between attempts to prevent rapid retries
+		if not success and attempts < config.maxRetries then
+			wait(0.2)
+		end
+	end
 
-    local function calculateSpeed(distance)
-        local speed = config.baseSpeed
-        if config.targetTime and self.RoundStartTime then
-            local elapsed = tick() - self.RoundStartTime
-            local remaining = config.targetTime - elapsed
-            if remaining > 0 and remaining < 20 then
-                local urgency = math.max(0, (20 - remaining) / 20)
-                local boostFactor = 1 + (urgency * urgency * 2)
-                speed = config.baseSpeed * math.min(boostFactor, 4)
-            end
-        end
-        if distance < 10 then
-            speed = speed * 0.7
-        elseif distance > 100 then
-            speed = speed * 1.3
-        end
-        return speed
-    end
+	-- Cleanup
+	if floatConnection then
+		floatConnection:Disconnect()
+	end
+	
+	-- Enhanced cleanup with error handling
+	pcall(function()
+		if float and float.Parent then
+			float:Destroy()
+		end
+	end)
 
-    local function getPathWaypoints(startPos, endPos)
-        if not config.usePathfinding then
-            return {endPos}
-        end
-        local ok, result = pcall(function()
-            local path = PathfindingService:CreatePath({
-                AgentRadius = 3,
-                AgentHeight = 6,
-                AgentCanJump = true,
-                WaypointSpacing = 8
-            })
-            path:ComputeAsync(startPos, endPos)
-            if path.Status == Enum.PathStatus.Success then
-                local waypoints = path:GetWaypoints()
-                local positions = {}
-                for i = 2, #waypoints do
-                    table.insert(positions, waypoints[i].Position + Vector3.new(0, config.hoverHeight, 0))
-                end
-                return #positions > 0 and positions or {endPos}
-            end
-            return {endPos}
-        end)
-        return ok and result or {endPos}
-    end
+	-- Final status update
+	if not success and self.StatusLabel then
+		local errorMsg = lastError or "Movement failed"
+		self.StatusLabel.Text = string.format("❌ Failed: %s", errorMsg)
+	end
 
-    local function tweenToTarget(targetPos, targetInstance)
-        local waypoints = getPathWaypoints(hrp.Position, targetPos)
-        for i, waypointPos in ipairs(waypoints) do
-            local currentPos = hrp.Position
-            local distance = (currentPos - waypointPos).Magnitude
-            if distance < 2 then continue end
-            if i == #waypoints and not safeGetPosition(targetInstance) then
-                return "retry"
-            end
-
-            local speed = calculateSpeed(distance)
-            local duration = math.clamp(distance / speed, config.minTweenDuration, config.maxTweenDuration)
-
-            local tweenInfo = TweenInfo.new(
-                duration,
-                distance < 10 and Enum.EasingStyle.Quad or Enum.EasingStyle.Linear,
-                Enum.EasingDirection.Out
-            )
-            local tween = TweenService:Create(hrp, tweenInfo, { CFrame = CFrame.new(waypointPos) })
-            tween:Play()
-
-            local startTime = tick()
-            local lastDistanceCheck = 0
-            local stuckCounter = 0
-
-            while tween.PlaybackState == Enum.PlaybackState.Playing do
-                local now = tick()
-                if now - startTime > config.timeout then
-                    tween:Cancel()
-                    return "timeout"
-                end
-                if now - lastDistanceCheck > 0.5 then
-                    if i == #waypoints and not safeGetPosition(targetInstance) then
-                        tween:Cancel()
-                        return "retry"
-                    end
-                    local currentDistance = (hrp.Position - waypointPos).Magnitude
-                    if currentDistance > distance * 0.9 then
-                        stuckCounter = stuckCounter + 1
-                        if stuckCounter > 3 then
-                            tween:Cancel()
-                            return "stuck"
-                        end
-                    else
-                        stuckCounter = 0
-                    end
-                    lastDistanceCheck = now
-                end
-                RunService.Heartbeat:Wait()
-            end
-
-            local finalDistance = (hrp.Position - waypointPos).Magnitude
-            if finalDistance > 5 then
-                return "incomplete"
-            end
-        end
-        return "success"
-    end
-
-    -- Main execution
-    local floatConnection = RunService.Heartbeat:Connect(updateFloat)
-    local attempts, success, lastError = 0, false, nil
-
-    while not success and attempts < config.maxRetries do
-        attempts += 1
-        if self.StatusLabel then
-            self.StatusLabel.Text = string.format("🔄 Moving... (Attempt %d/%d)", attempts, config.maxRetries)
-        end
-
-        local targetPos = safeGetPosition(target)
-        if not targetPos then
-            target = self:GetClosestCoin() and self:GetClosestCoin() or nil
-            if not target then lastError = "No valid targets found"; break end
-            continue
-        end
-
-        local distance = (hrp.Position - targetPos).Magnitude
-        if distance > config.maxDistance then
-            lastError = "Target too far away"
-            target = self:GetClosestCoin() and self:GetClosestCoin() or nil
-            if not target then break end
-            continue
-        end
-
-        local finalTargetPos = targetPos + Vector3.new(0, config.hoverHeight, 0)
-        local result = tweenToTarget(finalTargetPos, target)
-
-        if result == "success" then
-            -- After a successful coin: check candy and trigger pause at 10 / full (40)
-            local hit10, cur, max, isFull = hitExactly10(player)
-            if hit10 or isFull or (cur >= max) then
-                self:Pause(5, hrp)            -- moves under map + starts countdown
-                if floatConnection then floatConnection:Disconnect() end
-                pcall(function() if float and float.Parent then float:Destroy() end end)
-                return false, "restart"       -- exit so outer loop won't chase new coins
-            end
-
-            success = true
-            if self.StatusLabel then self.StatusLabel.Text = "✅ Target reached!" end
-
-        elseif result == "retry" or result == "timeout" or result == "stuck" then
-            lastError = result
-            target = self:GetClosestCoin() and self:GetClosestCoin() or nil
-            if not target then lastError = "No more targets available"; break end
-        end
-
-        if not success and attempts < config.maxRetries then
-            RunService.Heartbeat:Wait()
-        end
-    end
-
-    if floatConnection then floatConnection:Disconnect() end
-    pcall(function() if float and float.Parent then float:Destroy() end end)
-
-    if not success and self.StatusLabel then
-        self.StatusLabel.Text = string.format("❌ Failed: %s", lastError or "Movement failed")
-    end
-
-    return success, lastError
+	return success, lastError
 end
-
--- === Autofarm Pause/Resume API (add once to your Autofarm module) ===
-function Autofarm:IsPaused()
-    -- auto-expire the pause window
-    if self.Paused and self._pausedUntil and tick() >= self._pausedUntil then
-        self.Paused = false
-        self._pausedUntil = nil
-        if self.StatusLabel then
-            self.StatusLabel.Text = "Status: Farmer Restarted"
-        end
-    end
-    return self.Paused == true
-end
-
-function Autofarm:Pause(seconds, hrp)
-    local TweenService = game:GetService("TweenService")
-    local RunService = game:GetService("RunService")
-
-    if self.Paused then return end
-    seconds = tonumber(seconds) or 5
-
-    self.Paused = true
-    self._pausedUntil = tick() + seconds
-
-    -- Move under the map once (if we have HRP)
-    if hrp and hrp.Parent then
-        local params = RaycastParams.new()
-        params.FilterType = Enum.RaycastFilterType.Exclude
-        params.FilterDescendantsInstances = { hrp.Parent }
-
-        local origin = hrp.Position + Vector3.new(0, 5, 0)
-        local rc = workspace:Raycast(origin, Vector3.new(0, -1000, 0), params)
-        local targetY = rc and rc.Position and (rc.Position.Y - 40) or (hrp.Position.Y - 60)
-
-        TweenService:Create(
-            hrp,
-            TweenInfo.new(0.35, Enum.EasingStyle.Sine, Enum.EasingDirection.Out),
-            { CFrame = CFrame.new(hrp.Position.X, targetY, hrp.Position.Z) }
-        ):Play()
-    end
-
-    -- Countdown updater
-    task.spawn(function()
-        while self.Paused and tick() < (self._pausedUntil or 0) do
-            local remain = math.max(0, math.ceil((self._pausedUntil or 0) - tick()))
-            if self.StatusLabel then
-                self.StatusLabel.Text = (remain > 0)
-                    and ("Status: Farmer Restarted (%ds)"):format(remain)
-                    or "Status: Farmer Restarted"
-            end
-            RunService.Heartbeat:Wait()
-        end
-        -- finalize
-        self.Paused, self._pausedUntil = false, nil
-        if self.StatusLabel then
-            self.StatusLabel.Text = "Status: Farmer Restarted"
-        end
-    end)
-end
-
-function Autofarm:Resume()
-    self.Paused = false
-    self._pausedUntil = nil
-    if self.StatusLabel then
-        self.StatusLabel.Text = "Status: Farmer Restarted"
-    end
-end
-
-
-
 local TweenService = game:GetService("TweenService")
 
 function Autofarm:_TweenMove(hrp, targetPos, speed)
@@ -6527,59 +6603,6 @@ function _G.ThemeCustomizer.createHeader()
     tc.ui.close.TextColor3 = Color3.new(1,1,1)
     Instance.new("UICorner", tc.ui.close).CornerRadius = UDim.new(0, 4)
     tc.ui.close.MouseButton1Click:Connect(function() tc.ui.main.Visible = false end)
-
-    -- ===== DRAGGABLE (PC + MOBILE) =====
-    do
-        local UIS = game:GetService("UserInputService")
-        local DR = {drag=false}
-        local function begin(i)
-            DR.drag, DR.input = true, i
-            DR.startInput, DR.startPos = i.Position, tc.ui.main.Position
-            i.Changed:Connect(function()
-                if i.UserInputState == Enum.UserInputState.End then DR.drag = false end
-            end)
-        end
-        local function update(i)
-            if DR.drag and i == DR.input then
-                local d = i.Position - DR.startInput
-                tc.ui.main.Position = UDim2.new(DR.startPos.X.Scale, DR.startPos.X.Offset + d.X, DR.startPos.Y.Scale, DR.startPos.Y.Offset + d.Y)
-            end
-        end
-        local function hook(handle)
-            handle.Active = true; tc.ui.main.Active = true
-            handle.InputBegan:Connect(function(i)
-                if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then begin(i) end
-            end)
-            handle.InputChanged:Connect(function(i)
-                if i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch then DR.input = i end
-            end)
-        end
-        hook(tc.ui.header); hook(tc.ui.main)
-        UIS.InputChanged:Connect(update)
-    end
-
-    -- ===== MOBILE TITLE AUTO-FIT (keep full text) =====
-    do
-        local UIS = game:GetService("UserInputService")
-        if UIS.TouchEnabled and not UIS.KeyboardEnabled then
-            local TS = game:GetService("TextService")
-            tc.ui.title.TextScaled, tc.ui.title.TextWrapped = false, true
-            local function fit()
-                local w = math.max(10, tc.ui.title.AbsoluteSize.X - 12)
-                local h = math.max(10, tc.ui.title.AbsoluteSize.Y - 2)
-                local s = 18
-                while s > 10 do
-                    local b = TS:GetTextSize(tc.ui.title.Text, s, tc.ui.title.Font, Vector2.new(w, 1e6))
-                    if b.X <= w and b.Y <= h then break end
-                    s -= 1
-                end
-                tc.ui.title.TextSize = s
-            end
-            fit()
-            tc.ui.title:GetPropertyChangedSignal("AbsoluteSize"):Connect(fit)
-            tc.ui.main:GetPropertyChangedSignal("AbsoluteSize"):Connect(fit)
-        end
-    end
 end
 
 function _G.ThemeCustomizer.createThemeSection()
@@ -7928,4 +7951,4 @@ function _G.UIUtil.fitLabelToBar(labelObj, maxSize, minSize, padX)
     fit()
     labelObj:GetPropertyChangedSignal("AbsoluteSize"):Connect(fit)
 end
-warn("Loaded")
+warn("hell")
